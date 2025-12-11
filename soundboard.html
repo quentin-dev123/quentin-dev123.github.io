@@ -17,7 +17,7 @@
       color: canvastext;
     }
     main {
-      max-width: 720px;
+      max-width: 900px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -76,22 +76,46 @@
       background: #e03232;
     }
     .sound-list {
-      display: grid;
-      gap: 0.9rem;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
     }
-    .sound-btn {
+    .sound-card {
       padding: 1rem;
-      border-radius: 0.9rem;
-      background: color-mix(in srgb, #1f73ff 75%, canvas);
-      color: white;
-      font-size: 1rem;
-      font-weight: 600;
-      text-align: center;
-      transition: transform 0.15s;
+      border-radius: 1rem;
+      border: 1px solid color-mix(in srgb, canvastext 15%, canvas);
+      background: color-mix(in srgb, canvastext 6%, canvas);
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
     }
-    .sound-btn:active {
-      transform: scale(0.97);
+    .sound-card h3 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    .sound-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .sound-actions button {
+      flex: 1 1 120px;
+      min-width: 120px;
+    }
+    .progress-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .progress-row input[type="range"] {
+      flex: 1 1 auto;
+      min-width: 180px;
+    }
+    .time-label {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.9rem;
+      color: color-mix(in srgb, canvastext 70%, canvas);
     }
     .empty-state {
       padding: 2rem;
@@ -110,7 +134,7 @@
   <main>
     <header>
       <h1>Soundboard</h1>
-      <p>Add short sound effects and play them instantly.</p>
+      <p>Add short sound effects and control playback precisely.</p>
     </header>
 
     <form id="sound-form">
@@ -142,6 +166,7 @@
     const DB_NAME = "SoundboardDB";
     const STORE_NAME = "sounds";
     let db;
+    const controllers = new Map();
 
     const form = document.getElementById("sound-form");
     const titleInput = document.getElementById("title");
@@ -185,6 +210,11 @@
       if (!confirm("Delete all stored sounds? This cannot be undone.")) return;
       await clearStore();
       saveMeta([]);
+      controllers.forEach((ctrl) => {
+        ctrl.audio?.pause();
+        if (ctrl.url) URL.revokeObjectURL(ctrl.url);
+      });
+      controllers.clear();
       renderSounds();
     });
 
@@ -202,14 +232,189 @@
       emptyState.hidden = true;
       soundList.hidden = false;
 
-      meta.forEach(({ id, title, size }) => {
-        const btn = document.createElement("button");
-        btn.className = "sound-btn";
-        btn.textContent = title;
-        btn.title = `${title} — ${(size / 1024).toFixed(1)} KB`;
-        btn.addEventListener("click", () => playSound(id));
-        soundList.appendChild(btn);
+      meta.forEach((item) => {
+        const card = createSoundCard(item);
+        soundList.appendChild(card);
       });
+    }
+
+    function createSoundCard({ id, title, size }) {
+      const card = document.createElement("article");
+      card.className = "sound-card";
+      card.dataset.id = id;
+
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+
+      const actions = document.createElement("div");
+      actions.className = "sound-actions";
+
+      const playBtn = document.createElement("button");
+      playBtn.type = "button";
+      playBtn.textContent = "Play";
+      playBtn.addEventListener("click", () => togglePlay(id));
+
+      const restartBtn = document.createElement("button");
+      restartBtn.type = "button";
+      restartBtn.textContent = "Restart";
+      restartBtn.addEventListener("click", () => restartSound(id));
+
+      actions.append(playBtn, restartBtn);
+
+      const progressRow = document.createElement("div");
+      progressRow.className = "progress-row";
+
+      const progress = document.createElement("input");
+      progress.type = "range";
+      progress.min = 0;
+      progress.max = 100;
+      progress.value = 0;
+      progress.step = 0.1;
+      progress.disabled = true;
+      progress.addEventListener("input", () => seekSound(id, progress.value));
+
+      const timeLabel = document.createElement("span");
+      timeLabel.className = "time-label";
+      timeLabel.textContent = "0:00 / 0:00";
+
+      progressRow.append(progress, timeLabel);
+
+      const sizeLabel = document.createElement("span");
+      sizeLabel.className = "meta";
+      sizeLabel.textContent = `Size: ${(size / 1024).toFixed(1)} KB`;
+
+      card.append(heading, actions, progressRow, sizeLabel);
+
+      controllers.set(id, {
+        id,
+        playBtn,
+        restartBtn,
+        progress,
+        timeLabel,
+        isLoading: false,
+        audio: null,
+        url: null
+      });
+
+      return card;
+    }
+
+    async function ensureAudio(id) {
+      const ctrl = controllers.get(id);
+      if (!ctrl) throw new Error("Controller missing");
+
+      if (ctrl.audio) return ctrl.audio;
+
+      if (ctrl.isLoading) {
+        return new Promise((resolve) => {
+          const interval = setInterval(() => {
+            if (ctrl.audio) {
+              clearInterval(interval);
+              resolve(ctrl.audio);
+            }
+          }, 50);
+        });
+      }
+
+      ctrl.isLoading = true;
+      ctrl.playBtn.textContent = "Loading…";
+      ctrl.playBtn.disabled = true;
+      ctrl.restartBtn.disabled = true;
+
+      try {
+        const blob = await getBlob(id);
+        if (!blob) throw new Error("Audio data missing");
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+
+        const updateUI = () => updateProgressUI(id);
+        audio.addEventListener("timeupdate", updateUI);
+        audio.addEventListener("durationchange", updateUI);
+        audio.addEventListener("ended", () => {
+          audio.pause();
+          audio.currentTime = audio.duration || 0;
+          updateProgressUI(id);
+          setPlayLabel(id, false);
+        });
+
+        ctrl.audio = audio;
+        ctrl.url = url;
+        ctrl.progress.disabled = false;
+        ctrl.playBtn.disabled = false;
+        ctrl.restartBtn.disabled = false;
+        setPlayLabel(id, false);
+        updateProgressUI(id);
+        return audio;
+      } finally {
+        ctrl.isLoading = false;
+      }
+    }
+
+    async function togglePlay(id) {
+      const audio = await ensureAudio(id);
+      const isPlaying = !audio.paused;
+      if (isPlaying) {
+        audio.pause();
+        setPlayLabel(id, false);
+      } else {
+        pauseOthers(id);
+        await audio.play();
+        setPlayLabel(id, true);
+      }
+    }
+
+    async function restartSound(id) {
+      const audio = await ensureAudio(id);
+      audio.pause();
+      audio.currentTime = 0;
+      updateProgressUI(id);
+      setPlayLabel(id, false);
+    }
+
+    async function seekSound(id, percent) {
+      const audio = await ensureAudio(id);
+      if (!audio.duration || audio.duration === Infinity) return;
+      const nextTime = (percent / 100) * audio.duration;
+      audio.currentTime = nextTime;
+      updateProgressUI(id);
+    }
+
+    function pauseOthers(exceptId) {
+      controllers.forEach((ctrl, id) => {
+        if (id === exceptId) return;
+        if (ctrl.audio && !ctrl.audio.paused) {
+          ctrl.audio.pause();
+          setPlayLabel(id, false);
+        }
+      });
+    }
+
+    function setPlayLabel(id, isPlaying) {
+      const ctrl = controllers.get(id);
+      if (!ctrl) return;
+      ctrl.playBtn.textContent = isPlaying ? "Pause" : "Play";
+    }
+
+    function updateProgressUI(id) {
+      const ctrl = controllers.get(id);
+      if (!ctrl || !ctrl.audio) return;
+      const { audio, progress, timeLabel } = ctrl;
+
+      const duration = audio.duration && isFinite(audio.duration) ? audio.duration : 0;
+      const current = audio.currentTime || 0;
+      const percent = duration ? (current / duration) * 100 : 0;
+
+      progress.value = percent;
+      timeLabel.textContent = `${formatTime(current)} / ${duration ? formatTime(duration) : "0:00"}`;
+    }
+
+    function formatTime(seconds) {
+      if (!isFinite(seconds)) return "0:00";
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60)
+        .toString()
+        .padStart(2, "0");
+      return `${mins}:${secs}`;
     }
 
     function loadMeta() {
@@ -228,24 +433,9 @@
     function updateStats(meta) {
       const totalBytes = meta.reduce((sum, item) => sum + (item.size || 0), 0);
       const kb = totalBytes / 1024;
-      storageStats.textContent = `Total stored: ${kb >= 1024 ? (kb / 1024).toFixed(2) + " MB" : kb.toFixed(1) + " KB"} (${meta.length} item${meta.length === 1 ? "" : "s"})`;
-    }
-
-    async function playSound(id) {
-      try {
-        const blob = await getBlob(id);
-        if (!blob) {
-          alert("Audio data missing. Try re-adding this sound.");
-          return;
-        }
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audio.play();
-        audio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
-      } catch (error) {
-        console.error(error);
-        alert("Failed to play sound.");
-      }
+      storageStats.textContent = `Total stored: ${
+        kb >= 1024 ? (kb / 1024).toFixed(2) + " MB" : kb.toFixed(1) + " KB"
+      } (${meta.length} item${meta.length === 1 ? "" : "s"})`;
     }
 
     function openDB() {
@@ -253,9 +443,9 @@
         const request = indexedDB.open(DB_NAME, 1);
         request.onerror = () => reject(request.error);
         request.onupgradeneeded = () => {
-          const db = request.result;
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            db.createObjectStore(STORE_NAME, { keyPath: "id" });
+          const database = request.result;
+          if (!database.objectStoreNames.contains(STORE_NAME)) {
+            database.createObjectStore(STORE_NAME, { keyPath: "id" });
           }
         };
         request.onsuccess = () => resolve(request.result);
