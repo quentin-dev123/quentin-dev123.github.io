@@ -1,0 +1,27 @@
+{
+  "name": "chatgpt",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/three": "^0.182.0",
+    "@typescript-eslint/eslint-plugin": "^8.55.0",
+    "@typescript-eslint/parser": "^8.55.0",
+    "eslint": "^9.39.2",
+    "lil-gui": "^0.21.0",
+    "prettier": "^3.8.1",
+    "stats.js": "^0.17.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "simplex-noise": "^4.0.3",
+    "three": "^0.182.0"
+  }
+}
